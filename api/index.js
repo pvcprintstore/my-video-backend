@@ -1,10 +1,8 @@
-// NEW BACKEND CODE FOR /api/index.js (GitHub)
-
 const express = require('express');
 const multer = require('multer');
 const TelegramBot = require('node-telegram-bot-api');
 const admin = require('firebase-admin');
-const cors = require('cors'); // cors को import करें
+const cors = require('cors');
 const stream = require('stream');
 const { exec } = require('child_process');
 const fs = require('fs');
@@ -13,8 +11,8 @@ const path = require('path');
 const app = express();
 
 // === UPDATE: CORS को इस तरह इस्तेमाल करें ===
-// यह Vercel के साथ बेहतर काम करता है
-app.use(cors()); 
+app.options('*', cors()); // OPTIONS pre-flight request को हैंडल करने के लिए
+app.use(cors());          // बाकी सभी request के लिए
 
 app.use(express.json());
 
@@ -36,19 +34,19 @@ try {
 }
 const db = admin.database();
 
-// --- Telegram Bot Setup ---
+// ... बाकी का कोड बिल्कुल वैसा ही रहेगा जैसा पहले था ...
+// (नीचे पूरा कोड है, बस कॉपी पेस्ट कर लें)
+
 const token = process.env.TELEGRAM_BOT_TOKEN;
 const channelUsername = process.env.TELEGRAM_CHANNEL_USERNAME;
 const bot = new TelegramBot(token);
 
-// --- Multer (File Upload Handler) ---
 const storage = multer.memoryStorage();
 const upload = multer({
   storage: storage,
-  limits: { fileSize: 2000 * 1024 * 1024 } // Limit 2GB
+  limits: { fileSize: 2000 * 1024 * 1024 }
 });
 
-// --- Function to generate thumbnail from video ---
 const generateThumbnail = (videoBuffer) => {
     return new Promise((resolve, reject) => {
         const tempVideoPath = path.join('/tmp', `video-${Date.now()}.mp4`);
@@ -74,7 +72,6 @@ const generateThumbnail = (videoBuffer) => {
     });
 };
 
-// --- Main Upload Logic ---
 app.post('/api/upload', upload.fields([{ name: 'video', maxCount: 1 }, { name: 'thumbnail', maxCount: 1 }]), async (req, res) => {
   try {
     const { title, category, description, duration, uploader, uploaderId } = req.body;
@@ -84,62 +81,46 @@ app.post('/api/upload', upload.fields([{ name: 'video', maxCount: 1 }, { name: '
     if (!videoFile) return res.status(400).json({ message: 'Video file is required' });
     if (!uploaderId) return res.status(400).json({ message: 'Uploader ID is required' });
     
-    console.log(`Uploading video for ${uploader}...`);
     const videoStream = new stream.PassThrough().end(videoFile.buffer);
     const videoMsg = await bot.sendVideo(`@${channelUsername}`, videoStream, { caption: title });
     const videoPostId = videoMsg.message_id;
-    console.log(`Video sent to Telegram. Post ID: ${videoPostId}`);
 
     let finalThumbnailUrl = "https://placehold.co/600x400?text=No+Thumbnail";
     let thumbBuffer = thumbnailFile ? thumbnailFile.buffer : null;
     
     if (!thumbBuffer) {
         try {
-            console.log("No thumbnail provided, attempting to generate one...");
             thumbBuffer = await generateThumbnail(videoFile.buffer);
-            console.log("Thumbnail generated successfully.");
         } catch (genError) {
             console.error("Could not auto-generate thumbnail:", genError.message);
         }
     }
 
     if (thumbBuffer) {
-        console.log("Uploading thumbnail to Telegram...");
         const thumbStream = new stream.PassThrough().end(thumbBuffer);
         const thumbMsg = await bot.sendPhoto(`@${channelUsername}`, thumbStream);
         const fileId = thumbMsg.photo[thumbMsg.photo.length - 1].file_id;
         const file = await bot.getFile(fileId);
         finalThumbnailUrl = `https://api.telegram.org/file/bot${token}/${file.file_path}`;
-        console.log("Thumbnail uploaded.");
     }
 
-    console.log("Saving video metadata to Firebase...");
     const newVideoRef = db.ref('videos').push();
     await newVideoRef.set({
-        title: title || "Untitled Video",
-        category, description, duration, uploader, uploaderId,
-        videoPostId, channelUsername,
-        thumbnail: finalThumbnailUrl,
-        source: 'telegram_direct',
-        timestamp: Date.now(),
-        views: 0,
-        status: 'live'
+        title: title || "Untitled Video", category, description, duration, uploader, uploaderId,
+        videoPostId, channelUsername, thumbnail: finalThumbnailUrl, source: 'telegram_direct',
+        timestamp: Date.now(), views: 0, status: 'live'
     });
-    console.log("Firebase entry created. Key:", newVideoRef.key);
     
     res.status(200).json({ message: 'Upload successful!', videoId: newVideoRef.key });
-
   } catch (error) {
     console.error('Error during upload process:', error);
     res.status(500).json({ message: `Server error: ${error.message || 'Unknown error'}` });
   }
 });
 
-// --- New endpoint for editing video details ---
 app.post('/api/edit', async (req, res) => {
     try {
         const { videoId, title, description, category, uploaderId } = req.body;
-
         if (!videoId || !title || !category || !uploaderId) {
             return res.status(400).json({ message: 'Missing required fields for editing.' });
         }
@@ -148,25 +129,16 @@ app.post('/api/edit', async (req, res) => {
         const snapshot = await videoRef.once('value');
         const videoData = snapshot.val();
 
-        if (!videoData) {
-            return res.status(404).json({ message: "Video not found." });
-        }
-
-        if (videoData.uploaderId !== uploaderId) {
-             return res.status(403).json({ message: "You are not authorized to edit this video." });
-        }
+        if (!videoData) return res.status(404).json({ message: "Video not found." });
+        if (videoData.uploaderId !== uploaderId) return res.status(403).json({ message: "You are not authorized to edit this video." });
 
         await videoRef.update({ title, description, category });
         
-        console.log(`Video ${videoId} updated by ${uploaderId}.`);
         res.status(200).json({ message: "Video details updated successfully!" });
-
     } catch(error) {
         console.error('Error updating video details:', error);
         res.status(500).json({ message: `Server error: ${error.message}` });
     }
 });
 
-
-// Export the app for Vercel
 module.exports = app;
