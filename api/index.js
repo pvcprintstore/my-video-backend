@@ -4,19 +4,22 @@ const express = require('express');
 const multer = require('multer');
 const TelegramBot = require('node-telegram-bot-api');
 const admin = require('firebase-admin');
-const cors = require('cors');
+const cors = require('cors'); // cors को import करें
 const stream = require('stream');
 const { exec } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 
 const app = express();
-app.use(cors({ origin: true }));
-app.use(express.json()); // Important for the new /api/edit endpoint
+
+// === UPDATE: CORS को इस तरह इस्तेमाल करें ===
+// यह Vercel के साथ बेहतर काम करता है
+app.use(cors()); 
+
+app.use(express.json());
 
 // --- Firebase Admin SDK Setup ---
 try {
-    // Make sure your environment variables are set correctly in Vercel
     const serviceAccount = JSON.parse(
       Buffer.from(process.env.FIREBASE_SERVICE_ACCOUNT_BASE64, 'base64').toString('ascii')
     );
@@ -42,7 +45,7 @@ const bot = new TelegramBot(token);
 const storage = multer.memoryStorage();
 const upload = multer({
   storage: storage,
-  limits: { fileSize: 2000 * 1024 * 1024 } // === UPDATE: Limit increased to 2GB ===
+  limits: { fileSize: 2000 * 1024 * 1024 } // Limit 2GB
 });
 
 // --- Function to generate thumbnail from video ---
@@ -53,18 +56,16 @@ const generateThumbnail = (videoBuffer) => {
         
         fs.writeFile(tempVideoPath, videoBuffer, (err) => {
             if (err) return reject(err);
-
-            // Using ffmpeg to extract a frame after 1 second
             const command = `ffmpeg -i ${tempVideoPath} -ss 00:00:01.000 -vframes 1 ${tempThumbPath}`;
             
             exec(command, (error, stdout, stderr) => {
-                fs.unlink(tempVideoPath, ()=>{}); // Clean up video file immediately
+                fs.unlink(tempVideoPath, ()=>{});
                 if (error) {
                     console.error("FFMPEG Error:", stderr);
                     return reject(new Error('Failed to generate thumbnail. Is ffmpeg installed?'));
                 }
                 fs.readFile(tempThumbPath, (thumbErr, thumbBuffer) => {
-                    fs.unlink(tempThumbPath, ()=>{}); // Clean up thumbnail file
+                    fs.unlink(tempThumbPath, ()=>{});
                     if (thumbErr) return reject(thumbErr);
                     resolve(thumbBuffer);
                 });
@@ -83,18 +84,15 @@ app.post('/api/upload', upload.fields([{ name: 'video', maxCount: 1 }, { name: '
     if (!videoFile) return res.status(400).json({ message: 'Video file is required' });
     if (!uploaderId) return res.status(400).json({ message: 'Uploader ID is required' });
     
-    // 1. Send video to Telegram
     console.log(`Uploading video for ${uploader}...`);
     const videoStream = new stream.PassThrough().end(videoFile.buffer);
     const videoMsg = await bot.sendVideo(`@${channelUsername}`, videoStream, { caption: title });
     const videoPostId = videoMsg.message_id;
     console.log(`Video sent to Telegram. Post ID: ${videoPostId}`);
 
-    // 2. Handle Thumbnail
     let finalThumbnailUrl = "https://placehold.co/600x400?text=No+Thumbnail";
     let thumbBuffer = thumbnailFile ? thumbnailFile.buffer : null;
     
-    // === UPDATE: Auto-generate thumbnail if not provided ===
     if (!thumbBuffer) {
         try {
             console.log("No thumbnail provided, attempting to generate one...");
@@ -115,7 +113,6 @@ app.post('/api/upload', upload.fields([{ name: 'video', maxCount: 1 }, { name: '
         console.log("Thumbnail uploaded.");
     }
 
-    // 3. Save to Firebase
     console.log("Saving video metadata to Firebase...");
     const newVideoRef = db.ref('videos').push();
     await newVideoRef.set({
@@ -138,7 +135,7 @@ app.post('/api/upload', upload.fields([{ name: 'video', maxCount: 1 }, { name: '
   }
 });
 
-// === UPDATE: New endpoint for editing video details ===
+// --- New endpoint for editing video details ---
 app.post('/api/edit', async (req, res) => {
     try {
         const { videoId, title, description, category, uploaderId } = req.body;
@@ -155,7 +152,6 @@ app.post('/api/edit', async (req, res) => {
             return res.status(404).json({ message: "Video not found." });
         }
 
-        // Security check: Make sure the person editing owns the video
         if (videoData.uploaderId !== uploaderId) {
              return res.status(403).json({ message: "You are not authorized to edit this video." });
         }
